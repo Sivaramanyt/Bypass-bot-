@@ -2,18 +2,52 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import re
 import socket
+from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
 
 class ResolveError(Exception):
-    """A URL could not be safely resolved through ordinary HTTP redirects."""
+    """A URL could not be safely resolved through ordinary redirects."""
 
 
 REDIRECT_CODES = {301, 302, 303, 307, 308}
-USER_AGENT = "Mozilla/5.0 (compatible; ShortLinkResolver/1.0)"
+USER_AGENT = "Mozilla/5.0 (compatible; ShortLinkResolver/1.1)"
+MAX_HTML_BYTES = 256 * 1024
+_REFRESH_RE = re.compile(
+    r"""^\s*(\d+(?:\.\d+)?)\s*;\s*url\s*=\s*['"]?([^'"]+?)['"]?\s*$""",
+    re.IGNORECASE,
+)
+
+
+class _MetaRefreshParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.refresh: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "meta" or self.refresh is not None:
+            return
+        values = {key.lower(): value for key, value in attrs if value is not None}
+        if values.get("http-equiv", "").strip().lower() == "refresh":
+            self.refresh = values.get("content", "")
+
+
+def _refresh_target(value: str | None) -> tuple[str, float] | None:
+    if not value:
+        return None
+    match = _REFRESH_RE.match(value)
+    if not match:
+        return None
+    try:
+        delay = float(match.group(1))
+    except ValueError:
+        return None
+    target = match.group(2).strip()
+    return (target, delay) if target else None
 
 
 def _normalize_url(value: str) -> str:
@@ -71,6 +105,21 @@ async def _check_public_host(url: str) -> None:
         raise ResolveError("Private or reserved network destinations are blocked.")
 
 
+async def _read_limited_html(response: httpx.Response) -> str:
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        remaining = MAX_HTML_BYTES - total
+        if remaining <= 0:
+            break
+        piece = chunk[:remaining]
+        chunks.append(piece)
+        total += len(piece)
+        if len(chunk) > remaining or total >= MAX_HTML_BYTES:
+            break
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
 async def resolve_url(raw_url: str, max_redirects: int = 10, timeout: float = 12.0) -> tuple[str, int]:
     current = _normalize_url(raw_url)
     visited: set[str] = set()
@@ -82,7 +131,7 @@ async def resolve_url(raw_url: str, max_redirects: int = 10, timeout: float = 12
         limits=limits,
         verify=True,
         trust_env=False,
-        headers={"User-Agent": USER_AGENT, "Accept": "*/*"},
+        headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
     ) as client:
         for hop in range(max_redirects + 1):
             current = _normalize_url(current)
@@ -100,8 +149,30 @@ async def resolve_url(raw_url: str, max_redirects: int = 10, timeout: float = 12
                             raise ResolveError("Too many redirects. Try a different link.")
                         current = urljoin(str(response.url), location)
                         continue
+
                     if 200 <= response.status_code < 300:
+                        content_type = response.headers.get("content-type", "").lower()
+                        if "html" in content_type or "xhtml" in content_type:
+                            refresh = _refresh_target(response.headers.get("refresh"))
+                            if refresh is None:
+                                html = await _read_limited_html(response)
+                                parser = _MetaRefreshParser()
+                                parser.feed(html)
+                                refresh = _refresh_target(parser.refresh)
+
+                            if refresh is not None:
+                                target, delay = refresh
+                                if delay > 0:
+                                    raise ResolveError(
+                                        "This page uses a timed redirect. The bot does not skip ad timers "
+                                        "or waiting periods."
+                                    )
+                                if hop >= max_redirects:
+                                    raise ResolveError("Too many redirects. Try a different link.")
+                                current = urljoin(str(response.url), target)
+                                continue
                         return str(response.url), hop
+
                     if response.status_code in (401, 403, 407, 429):
                         raise ResolveError(
                             f"The destination blocked the request (HTTP {response.status_code}). "
