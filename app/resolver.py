@@ -159,6 +159,12 @@ async def resolve_url(raw_url: str, max_redirects: int = 10, timeout: float = 12
                                 parser = _MetaRefreshParser()
                                 parser.feed(html)
                                 refresh = _refresh_target(parser.refresh)
+                                page_text = html.lower()
+                                if refresh is None and "please wait" in page_text and "opening link" in page_text:
+                                    raise ResolveError(
+                                        "This shortener returned an intermediate waiting page. "
+                                        "It may require JavaScript or manual verification; the bot does not skip ad gates."
+                                    )
 
                             if refresh is not None:
                                 target, delay = refresh
