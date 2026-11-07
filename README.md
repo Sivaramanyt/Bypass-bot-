@@ -4,13 +4,15 @@ A Telegram bot that resolves ordinary HTTP/HTTPS redirect-based short links and 
 
 ## Supported
 - Standard HTTP 301/302/303/307/308 redirects
+- Immediate HTTP `Refresh` and HTML meta-refresh redirects (zero-second only)
+- Clear detection of common waiting/interstitial pages that need JavaScript or manual verification
 - Multiple redirect hops (up to the configured limit)
 - URL validation and basic SSRF protections
 - Optional Supabase logging
 - Telegram webhook deployment on Koyeb or another ASGI host
 
 ## Not supported
-This is a redirect resolver, not an ad-gate bypass service. It does **not** defeat CAPTCHA, login walls, mandatory ad-view timers, paywalls, JavaScript challenges, or other access controls. It will report a clear error when a destination cannot be resolved through ordinary redirects.
+This is a redirect resolver, not an ad-gate bypass service. It follows ordinary HTTP redirects and publicly exposed immediate (zero-second) HTML meta-refresh redirects. It does **not** execute JavaScript, click page buttons, defeat CAPTCHA, login walls, mandatory ad-view timers, paywalls, or other access controls. Timed refreshes are not followed. Some shorteners expose only an intermediate page; those are reported as unresolved rather than returning that page as a false final destination.
 
 ## Required environment variables
 - `BOT_TOKEN`: Telegram bot token from BotFather
