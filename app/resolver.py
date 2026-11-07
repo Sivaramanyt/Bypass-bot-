@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import logging
 import re
 import socket
 from html.parser import HTMLParser
@@ -16,6 +17,7 @@ class ResolveError(Exception):
 
 REDIRECT_CODES = {301, 302, 303, 307, 308}
 USER_AGENT = "Mozilla/5.0 (compatible; ShortLinkResolver/1.1)"
+logger = logging.getLogger("resolver")
 MAX_HTML_BYTES = 256 * 1024
 _REFRESH_RE = re.compile(
     r"""^\s*(\d+(?:\.\d+)?)\s*;\s*url\s*=\s*['"]?([^'"]+?)['"]?\s*$""",
@@ -141,6 +143,14 @@ async def resolve_url(raw_url: str, max_redirects: int = 10, timeout: float = 12
             await _check_public_host(current)
             try:
                 async with client.stream("GET", current) as response:
+                    logger.info(
+                        "Resolver response host=%s status=%s content_type=%s location_present=%s refresh_present=%s",
+                        urlsplit(str(response.url)).hostname,
+                        response.status_code,
+                        response.headers.get("content-type", "unknown").split(";", 1)[0],
+                        bool(response.headers.get("location")),
+                        bool(response.headers.get("refresh")),
+                    )
                     if response.status_code in REDIRECT_CODES:
                         location = response.headers.get("location")
                         if not location:
@@ -159,6 +169,12 @@ async def resolve_url(raw_url: str, max_redirects: int = 10, timeout: float = 12
                                 parser = _MetaRefreshParser()
                                 parser.feed(html)
                                 refresh = _refresh_target(parser.refresh)
+                                logger.info(
+                                    "Resolver HTML inspected host=%s bytes_read=%s meta_refresh_found=%s",
+                                    urlsplit(str(response.url)).hostname,
+                                    len(html.encode("utf-8", errors="ignore")),
+                                    bool(refresh),
+                                )
                                 page_text = html.lower()
                                 if refresh is None and "please wait" in page_text and "opening link" in page_text:
                                     raise ResolveError(
