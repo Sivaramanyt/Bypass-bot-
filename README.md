@@ -23,6 +23,7 @@ This is a redirect resolver, not an ad-gate bypass service. It follows ordinary 
 - `SUPABASE_TABLE`: optional log table name; defaults to `resolver_logs`
 - `MAX_REDIRECTS`: optional; defaults to `10`
 - `REQUEST_TIMEOUT`: optional seconds; defaults to `12`
+- 
 - `MAX_REQUESTS_PER_MINUTE`: optional per-user in-memory limit; defaults to `20`
 
 ## Supabase table (optional)
